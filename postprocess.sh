@@ -1,63 +1,116 @@
 #!/usr/bin/env bash
 # Post-process a Framer static export for self-hosting at atechbuilding.com.
 #
-# Run this on every fresh export, before committing.
-# Idempotent: running it twice changes nothing.
-#
 #   ./postprocess.sh [dir]     (defaults to this script's directory)
 #
-# What it does, and why:
+# Idempotent: running it twice changes nothing. Bump MARKER to force re-injection
+# after editing the injected block.
 #
-#   Hides the "Made in Framer" badge. The badge markup ships in the HTML and is
-#   also managed by the Framer runtime, which re-renders after hydration. So we
-#   hide it with a CSS rule rather than deleting the node: a selector still
-#   applies to the re-rendered DOM, a deletion does not survive it.
+# What it does, and why each part exists:
+#
+# 1. Hides the "Made in Framer" badge.
+#    Done with a CSS rule, not by deleting nodes. The Framer runtime re-renders
+#    after hydration and restores deleted nodes; a CSS selector still applies to
+#    the re-rendered DOM.
+#
+# 2. Reveals the floating WhatsApp button only after the visitor scrolls past
+#    the "Custom Home Building" section.
+#    Framer cannot express this: fixed positioning is only allowed for direct
+#    children of a page breakpoint, so the button cannot be wrapped in a
+#    scroll-trigger frame, and appearEffect's onScrollTarget takes no target.
+#    Implemented here as a class toggle on <html> plus a CSS rule, so it also
+#    survives hydration. On pages with no such section (contact, projects,
+#    services, 404) the button shows immediately.
 #
 # What it deliberately does NOT touch:
-#
-#   js/*.mjs and js/rerouter.js. Those contain the exporter's URL rewrite map,
-#   which legitimately references the framer.website origin. Editing bundles
-#   breaks routing.
+#    js/*.mjs and js/rerouter.js. Those hold the exporter's URL rewrite map,
+#    which legitimately references the framer.website origin. Editing bundles
+#    breaks routing.
 
 DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$DIR" || exit 1
 
-MARKER="atech-postprocess"
-CSS="<style data-${MARKER}=\"1\">#__framer-badge-container{display:none!important}</style>"
+MARKER="atech-pp-v6"
 
-changed=0
-skipped=0
+read -r -d '' BLOCK <<'BLOCK_EOF'
+<style data-MARKERID="1">
+#__framer-badge-container{display:none!important}
+/* Hidden with display rather than opacity. Opacity alone left the element in
+   the layout and proved impossible to verify reliably; display is unambiguous
+   and cannot be overridden by Framer's own paint-level styling. */
+a[href*="wa.me"]{display:none!important}
+html.wa-show a[href*="wa.me"]{display:flex!important}
+</style>
+<script data-MARKERID="1">
+(function () {
+  var root = document.documentElement;
+  var target = null, last = 0;
 
+  // The site uses Lenis smooth scroll, which intercepts native scroll events
+  // and makes pageYOffset unreliable. Reading the element's rendered position
+  // on an animation frame works regardless of the scroll implementation.
+  function findTarget() {
+    var els = document.querySelectorAll("h1,h2,h3,h4,p,span,div");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.children.length === 0 && /Custom Home Building/i.test(el.textContent || "")) return el;
+    }
+    return null;
+  }
+
+  function tick() {
+    if (!target || !target.isConnected) target = findTarget();
+    if (!target) {
+      root.classList.add("wa-show");             // no such section: show always
+    } else {
+      var top = target.getBoundingClientRect().top;
+      if (top < window.innerHeight * 0.6) root.classList.add("wa-show");
+      else root.classList.remove("wa-show");
+    }
+  }
+
+  // An interval rather than requestAnimationFrame: rAF is paused whenever the
+  // tab is not compositing, which also makes the behaviour impossible to test
+  // in a headless browser. 120ms is well under a fade's perceptible threshold.
+  function start() {
+    tick();
+    setInterval(tick, 120);
+    window.addEventListener("scroll", tick, { passive: true });
+    window.addEventListener("resize", tick);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
+})();
+</script>
+BLOCK_EOF
+BLOCK="${BLOCK//MARKERID/$MARKER}"
+
+changed=0; skipped=0
 while IFS= read -r f; do
-  if grep -q "data-${MARKER}" "$f"; then
-    skipped=$((skipped + 1))
-    continue
-  fi
-  # inject immediately before </head>
-  if grep -q "</head>" "$f"; then
-    python - "$f" "$CSS" <<'PY' 2>/dev/null || sed -i "s|</head>|${CSS}</head>|" "$f"
-import sys, io
-path, css = sys.argv[1], sys.argv[2]
+  if grep -q "data-${MARKER}" "$f"; then skipped=$((skipped+1)); continue; fi
+  BLOCK="$BLOCK" python - "$f" <<'PY' 2>/dev/null
+import io, os, sys
+path = sys.argv[1]
+block = os.environ["BLOCK"]
 with io.open(path, "r", encoding="utf-8") as fh:
     html = fh.read()
-html = html.replace("</head>", css + "</head>", 1)
-with io.open(path, "w", encoding="utf-8") as fh:
-    fh.write(html)
+if "</head>" in html:
+    html = html.replace("</head>", block + "</head>", 1)
+    with io.open(path, "w", encoding="utf-8") as fh:
+        fh.write(html)
 PY
-    changed=$((changed + 1))
-  fi
+  changed=$((changed+1))
 done < <(find . -name "*.html" -type f)
 
-echo "badge-hide injected into : $changed file(s)"
-echo "already had it           : $skipped file(s)"
+echo "injected into : $changed file(s)"
+echo "already had it: $skipped file(s)"
 
-# --- vercel.json: force a plain static deploy -------------------------------
-# The Vercel project was created with the Next.js preset, so without this it
-# runs `npm run vercel-build`, finds no package.json, and the deploy fails.
-# Framer rewrites vercel.json on every export, so this has to be re-applied
-# here rather than committed once by hand.
+# vercel.json: force a plain static deploy.
+# The Vercel project uses the Next.js preset, so without this it runs
+# `npm run vercel-build`, finds no package.json, and the deploy fails.
+# Framer rewrites vercel.json on every export, so re-apply it here.
 if [ -f vercel.json ]; then
-  python - <<'PY' 2>/dev/null && echo "vercel.json         : static build settings applied" || echo "vercel.json         : SKIPPED (python unavailable)"
+  python - <<'PY' 2>/dev/null && echo "vercel.json   : static build settings applied" || echo "vercel.json   : SKIPPED (python unavailable)"
 import io, json
 with io.open("vercel.json", "r", encoding="utf-8") as fh:
     cfg = json.load(fh)
@@ -66,8 +119,7 @@ cfg["buildCommand"] = None
 cfg["installCommand"] = None
 cfg["outputDirectory"] = "."
 with io.open("vercel.json", "w", encoding="utf-8") as fh:
-    json.dump(cfg, fh, indent=2)
-    fh.write("\n")
+    json.dump(cfg, fh, indent=2); fh.write("\n")
 PY
 fi
 
@@ -75,13 +127,11 @@ echo
 echo "--- verification ---"
 total=$(find . -name "*.html" -type f | wc -l)
 have=$(grep -rl "data-${MARKER}" --include="*.html" . 2>/dev/null | wc -l)
-echo "html files              : $total"
-echo "with badge rule         : $have"
-echo "canonical -> atechbuilding.com : $(grep -rl 'rel="canonical"' --include='*.html' . 2>/dev/null | wc -l) pages"
-echo "wrong domain (a-tech...): $(grep -rl 'a-techbuilding\.com' --include='*.html' --include='*.xml' --include='*.txt' . 2>/dev/null | wc -l) files"
+echo "html files            : $total"
+echo "with injected block   : $have"
+echo "badge hidden          : $(grep -rl '__framer-badge-container{display:none' --include='*.html' . 2>/dev/null | wc -l)"
+echo "whatsapp reveal       : $(grep -rl 'wa-show' --include='*.html' . 2>/dev/null | wc -l)"
+echo "wrong domain          : $(grep -rl 'a-techbuilding\.com' --include='*.html' --include='*.xml' --include='*.txt' . 2>/dev/null | wc -l) files"
 
-if [ "$have" -ne "$total" ]; then
-  echo "WARNING: $((total - have)) html file(s) missing the badge rule"
-  exit 1
-fi
+[ "$have" -ne "$total" ] && { echo "WARNING: $((total-have)) file(s) missing the block"; exit 1; }
 echo "OK"
