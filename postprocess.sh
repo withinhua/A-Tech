@@ -30,7 +30,7 @@
 DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$DIR" || exit 1
 
-MARKER="atech-pp-v7"
+MARKER="atech-pp-v8"
 
 read -r -d '' BLOCK <<'BLOCK_EOF'
 <style data-MARKERID="1">
@@ -39,7 +39,10 @@ read -r -d '' BLOCK <<'BLOCK_EOF'
    the layout and proved impossible to verify reliably; display is unambiguous
    and cannot be overridden by Framer's own paint-level styling. */
 a[href*="wa.me"]{display:none!important}
-html.wa-show a[href*="wa.me"]{display:flex!important}
+/* In Framer the button sits at bottom:88px so it clears the "Made in Framer"
+   badge on the preview. That badge is hidden here, so it can drop to a normal
+   floating-button inset. */
+html.wa-show a[href*="wa.me"]{display:flex!important;bottom:24px!important}
 </style>
 <script data-MARKERID="1">
 (function () {
