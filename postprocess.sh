@@ -30,7 +30,7 @@
 DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$DIR" || exit 1
 
-MARKER="atech-pp-v6"
+MARKER="atech-pp-v7"
 
 read -r -d '' BLOCK <<'BLOCK_EOF'
 <style data-MARKERID="1">
@@ -80,6 +80,76 @@ html.wa-show a[href*="wa.me"]{display:flex!important}
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
+})();
+
+// --- Contact form -> Web3Forms -------------------------------------------
+// Framer's form is React-driven and posts nowhere, so submission is taken over
+// here. Listening in the capture phase and stopping propagation prevents
+// Framer's own handler from also running.
+//
+// Framer adds 11 hidden honeypot fields (website, company, message, subject,
+// title, description, feedback, notes, details, remarks, comments). Only the
+// four real fields are forwarded: sending the rest would let "subject"
+// overwrite the email subject. A filled honeypot means a bot, which is
+// accepted silently so the bot cannot tell it failed.
+(function () {
+  var KEY = "53f97b1b-c989-4d07-a418-e5065e0fd644";
+  var THANKS = "/thank-you";
+  var REAL = ["Name", "Email", "Phone", "Project Details"];
+
+  function onSubmit(e) {
+    var form = e.currentTarget;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+
+    var fd = new FormData(form);
+    var payload = {
+      access_key: KEY,
+      subject: "New enquiry from atechbuilding.com",
+      from_name: "A-Tech Website"
+    };
+    var bot = false, filled = false;
+    fd.forEach(function (v, k) {
+      var val = String(v == null ? "" : v).trim();
+      if (REAL.indexOf(k) === -1) { if (val) bot = true; return; }
+      payload[k] = val;
+      if (val) filled = true;
+    });
+
+    if (bot) { window.location.href = THANKS; return; }
+    if (!filled) return;
+    if (payload.Email) payload.replyto = payload.Email;
+
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    var fail = function () {
+      if (btn) btn.disabled = false;
+      window.alert("Sorry, that did not send. Please call or WhatsApp us on 082 820 1705.");
+    };
+
+    fetch("https://api.web3forms.com/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload)
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (j) { if (j && j.success) window.location.href = THANKS; else fail(); })
+      .catch(fail);
+  }
+
+  function wire() {
+    var forms = document.querySelectorAll("form");
+    for (var i = 0; i < forms.length; i++) {
+      if (forms[i].getAttribute("data-atech-form")) continue;
+      forms[i].setAttribute("data-atech-form", "1");
+      forms[i].addEventListener("submit", onSubmit, true);
+    }
+  }
+
+  function startForm() { wire(); setInterval(wire, 400); }  // re-wire after hydration
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startForm);
+  else startForm();
 })();
 </script>
 BLOCK_EOF
