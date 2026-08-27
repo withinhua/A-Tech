@@ -51,6 +51,26 @@ done < <(find . -name "*.html" -type f)
 echo "badge-hide injected into : $changed file(s)"
 echo "already had it           : $skipped file(s)"
 
+# --- vercel.json: force a plain static deploy -------------------------------
+# The Vercel project was created with the Next.js preset, so without this it
+# runs `npm run vercel-build`, finds no package.json, and the deploy fails.
+# Framer rewrites vercel.json on every export, so this has to be re-applied
+# here rather than committed once by hand.
+if [ -f vercel.json ]; then
+  python - <<'PY' 2>/dev/null && echo "vercel.json         : static build settings applied" || echo "vercel.json         : SKIPPED (python unavailable)"
+import io, json
+with io.open("vercel.json", "r", encoding="utf-8") as fh:
+    cfg = json.load(fh)
+cfg["framework"] = None
+cfg["buildCommand"] = None
+cfg["installCommand"] = None
+cfg["outputDirectory"] = "."
+with io.open("vercel.json", "w", encoding="utf-8") as fh:
+    json.dump(cfg, fh, indent=2)
+    fh.write("\n")
+PY
+fi
+
 echo
 echo "--- verification ---"
 total=$(find . -name "*.html" -type f | wc -l)
